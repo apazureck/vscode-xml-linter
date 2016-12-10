@@ -11,13 +11,25 @@ import {
 	InitializeParams, InitializeResult, TextDocumentPositionParams,
 	CompletionItem, CompletionItemKind
 } from 'vscode-languageserver';
-import * as xmllint from 'xmllint';
+
+// import * as xml from 'xml-stream'
+// import * as xmldom from 'xmldom'
 import * as rrd from 'recursive-readdir';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscodels from 'vscode-languageserver';
+var xmllint: xmllint = require('xmllint');
+import * as enumerable from 'linq-es2015';
+// var $ = require("jQuery");
+
+// declare namespace xmllint {
+// 	function validateXML(args: { xml: string | string[]; schema: string | string[]}): { error: null|string[]};
+// }
 
 // Create a connection for the server. The connection uses Node's IPC as a transport
 let connection: IConnection = createConnection(new IPCMessageReader(process), new IPCMessageWriter(process));
+const xmlnamespaceregex = /xmlns:?(\w*?)\s*=\s*["'](.*?)["']/g;
+const xmlschemadefinition = /targetNamespace\s*=\s*["'](.*?)["']/;
 
 // Create a simple text document manager. The text document manager
 // supports full document sync only
@@ -27,18 +39,14 @@ let documents: TextDocuments = new TextDocuments();
 documents.listen(connection);
 
 // After the server has started the client sends an initilize request. The server receives
-// in the passed params the rootPath of the workspace plus the client capabilites. 
+// in the passed params the rootPath of the workspace plus the client capabilites.
 let workspaceRoot: string;
 connection.onInitialize((params): InitializeResult => {
 	workspaceRoot = params.rootPath;
 	return {
 		capabilities: {
 			// Tell the client that the server works in FULL text document sync mode
-			textDocumentSync: documents.syncKind,
-			// Tell the client that the server support code complete
-			completionProvider: {
-				resolveProvider: true
-			}
+			textDocumentSync: documents.syncKind
 		}
 	}
 });
@@ -51,27 +59,46 @@ documents.onDidChangeContent((change) => {
 });
 
 function checkForSchemaUpdates() {
-	for(let source in schemalocations) {
+	connection.console.log("Checking for new Schemas.\n");
+	for(let source of schemalocations) {
 		// Check if it is a uri
 		if(source.startsWith("(http://|ftp://|file:///)")) {
 			// TODO: Download schemas
 		} else { // Check folders
 			let folder;
-			if(!path.isAbsolute(source))
+			if(path.isAbsolute(source))
 				folder = source;
 			else
 				folder = path.join(workspaceRoot, source);
-			
-			for(let file in findFilesSync(/\.xsd$/, folder)) {
-				if(!schemauris.find((value, index, obj) => { return value === file; }))
+
+			for(let file of findFilesSync(/\.xsd$/, folder)) {
+				if(!findSchema(file))
 					addNewSchema(file);
 			}
 		}
 	}
 }
 
+function findSchema(file: string): string {
+	connection.console.log("Looking for schema '" + file + "'\n")
+	try {
+		for(let value in schemauris) {
+			if(schemauris[value].replace("file:///", "")===file)
+				return file;
+		}
+		return null;
+	} catch (error) {
+		return null;
+	}
+}
+
 function addNewSchema(file: string) {
-	schemauris.push("file:///" + file);
+	connection.console.log("Adding Schema '" + file + "'\n")
+	let schemacontent = fs.readFileSync(file).toString();
+	let name = schemacontent.match(xmlschemadefinition)[1];
+
+	if(name)
+		schemauris[name] = "file:///" + file;
 }
 
 function findSync(pattern, startdir, ignore) {
@@ -124,109 +151,144 @@ let maxNumberOfProblems: number;
 let schemalocations: string[];
 
 // Actual schema locations
-let schemauris: string[];
+let schemauris: { [namespace: string]: string} = { };
 // The settings have changed. Is send on server activation
 // as well.
 connection.onDidChangeConfiguration((change) => {
 	let settings = <Settings>change.settings;
 	maxNumberOfProblems = settings.xml.maxNumberOfProblems || 100;
 	schemalocations = settings.xml.schemalocations || ['.vscode/xmlschemas'];
-	
+
 	// Revalidate any open text documents
-	documents.all().forEach(validateTextDocument);
+	checkForSchemaUpdates();
+	documents.all().forEach((value, index, array)=>{validateTextDocument(value)});
 });
 
 function validateTextDocument(textDocument: TextDocument): void {
+	connection.console.log("Validating document '" + textDocument.uri+"'\n")
+	if(!textDocument)
+		return;
+
+	// Check finding diagnostic files.
 	let diagnostics: Diagnostic[] = [];
-	
-	// Send the computed diagnostics to VSCode.
-	connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+
+	let content = textDocument.getText();
+	let m;
+	let usedschemas: { [id: string]: { range: vscodels.Range, uri: string} } = {};
+	while((m = xmlnamespaceregex.exec(content))!=null) {
+		let name = m[1]; let uri = m[2];
+		let r = vscodels.Range.create(textDocument.positionAt(m.index), textDocument.positionAt(m.index + m[0].length));
+		usedschemas[name] = { uri: uri, range: r };
+	}
+	connection.console.info("Found" + Object.keys(usedschemas).length + " schemas.");
+
+	let probcntr = 0;
+	for(let schema in usedschemas) {
+		try {
+			connection.console.info("Checking schema " + schema);
+			let sf = schemauris[usedschemas[schema].uri]
+			if(sf) {
+				let diag = evaluateSchema({ xml: content, doc: textDocument }, { uri: schemauris[usedschemas[schema].uri], xsd: fs.readFileSync(schemauris[usedschemas[schema].uri].replace("file:///", "")).toString(), namespace: schema });
+				diag.forEach((value, index, array) => {
+					if(probcntr > maxNumberOfProblems)
+						return;
+					if(probcntr + value.diagnostics.length > maxNumberOfProblems)
+						value.diagnostics = value.diagnostics.slice(0, maxNumberOfProblems - probcntr);
+					probcntr += value.diagnostics.length;
+					connection.sendDiagnostics(value);
+				});
+			}
+			else
+				diagnostics.push({
+					range: usedschemas[schema].range,
+					message: "Could not find schema for uri '" + usedschemas[schema].uri + "'.\nMake sure your schema is located in '${workspaceRoot}/.vscode/xmlschemas'",
+					source: "xmlLint",
+					severity: vscodels.DiagnosticSeverity.Warning
+				});
+		} catch (error) {
+			connection.console.error(error.toString() + "\n" + error.stack ? error.stack : "");
+		}
+	}
+
+	connection.console.info("Having " + diagnostics.length + " error(s) with Schema uris.")
+
+	if(diagnostics.length>0)
+		connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+
+	connection.console.info("Validated document successfully.")
 }
 
-connection.onDidChangeWatchedFiles((change) => {
-	// Monitored files have change in VSCode
-	connection.console.log('We recevied an file change event');
+process.on('uncaughtException', function (err) {
+  console.log('Caught exception: ' + err);
 });
 
-
-// This handler provides the initial list of the completion items.
-connection.onCompletion((textDocumentPosition: TextDocumentPositionParams): CompletionItem[] => {
-	// The pass parameter contains the position of the text document in 
-	// which code complete got requested. For the example we ignore this
-	// info and always provide the same completion items.
-	return [
-		{
-			label: 'TypeScript',
-			kind: CompletionItemKind.Text,
-			data: 1
-		},
-		{
-			label: 'JavaScript',
-			kind: CompletionItemKind.Text,
-			data: 2
+function evaluateSchema(xmlfile: { xml: string, doc: TextDocument }, schemafile: { xsd: string, uri: string, namespace: string}): vscodels.PublishDiagnosticsParams[] {
+	
+	let diagnostics: vscodels.PublishDiagnosticsParams[] = [];
+	try {
+		// let result = { errors: [] }
+		let result = xmllint.validateXML({
+			xml: [xmlfile.xml],
+			schema: [schemafile.xsd]
+		});
+ 		// console.log("result ", result);
+		let diags: {diag:Diagnostic,type:string}[] = [];
+		if(result.errors) {
+			for(let error of result.errors)
+				connection.console.log("Pushing result Nr. " + diags.push(getDiagnosticItem(error, xmlfile, schemafile)));
+			let xmlerrors = enumerable.asEnumerable(diags).Where(x=> x.type == "xml").Select(x=> x.diag).ToArray();
+			connection.console.info("Found "+ xmlerrors.length + " errors in xml file");
+			if(xmlerrors.length>0)
+				diagnostics.push({ uri: xmlfile.doc.uri, diagnostics: xmlerrors});
+			// let xsderrors = enumerable.asEnumerable(diags).Where(x=> x.type == "xsd").Select(x=>x.diag).ToArray();
+			// connection.console.info("Found "+ xsderrors.length+" errors in xsd file");
+			// if(xsderrors.length>0)
+			// 	diagnostics.push({ uri: schemafile.uri, diagnostics: xsderrors});
 		}
-	]
-});
-
-// This handler resolve additional information for the item selected in
-// the completion list.
-connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
-	if (item.data === 1) {
-		item.detail = 'TypeScript details',
-		item.documentation = 'TypeScript documentation'
-	} else if (item.data === 2) {
-		item.detail = 'JavaScript details',
-		item.documentation = 'JavaScript documentation'
+	} catch (error) {
+		connection.console.error(error.toString() + "\n" + error.stack ? error.stack : "");
 	}
-	return item;
-});
+	return diagnostics;
+}
 
-/*
-connection.onDidOpenTextDocument((params) => {
-	// A text document got opened in VSCode.
-	// params.uri uniquely identifies the document. For documents store on disk this is a file URI.
-	// params.text the initial full content of the document.
-	connection.console.log(`${params.uri} opened.`);
-});
+function getDiagnosticItem(linterror: string, xmlfile: { xml: string, doc: TextDocument }, schemafile: { xsd: string, uri: string, namespace: string}): {diag: Diagnostic, type: string} {
+	let errormsg = /file_0\.(xsd|xml):(\d*):(.*):(.*):\s*(.*)/.exec(linterror);
+	// Group 1: extension, Group 2: Line, Group 3: type, Group 4: source, Group 5: Message
+	if(errormsg) {
+		if(errormsg[1] == "xsd") {
+			return {diag: {
+				message: errormsg[3] + ":" + errormsg[4] + ":" + errormsg[5],
+				range: vscodels.Range.create({ line: Number(errormsg[2]), character: 1}, { line: Number(errormsg[2]), character: 2 }),
+				source: schemafile.namespace,
+				severity: vscodels.DiagnosticSeverity.Warning
+			}, type: "xsd"}
+		} else {
+			let offset = xmlfile.doc.offsetAt({ character: 1, line: Number(errormsg[2])})
+			let startchar = xmlfile.xml.indexOf(errormsg[4].trim(), offset) - offset;
+			let range = vscodels.Range.create({line:Number(errormsg[2]), character:startchar}, {line:Number(errormsg[2]),character:startchar+errormsg[4].trim().length})
+			return { diag: {
+				message: errormsg[3],
+				range: vscodels.Range.create({ line: Number(errormsg[2]), character: 1}, { line: Number(errormsg[2]), character: 2 }),
+				source: schemafile.namespace,
+				severity: getSeverity(errormsg[3])
+			}, type: "xml" }
+		}
+	}
+	return { diag: { 
+			message: "linterror",
+			range: vscodels.Range.create({ line: 1, character: 1}, { line: 1, character: 2}),
+			source: "unknown"
+		}, type: "unknown" }
+}
 
-connection.onDidChangeTextDocument((params) => {
-	// The content of a text document did change in VSCode.
-	// params.uri uniquely identifies the document.
-	// params.contentChanges describe the content changes to the document.
-	connection.console.log(`${params.uri} changed: ${JSON.stringify(params.contentChanges)}`);
-});
-
-connection.onDidCloseTextDocument((params) => {
-	// A text document got closed in VSCode.
-	// params.uri uniquely identifies the document.
-	connection.console.log(`${params.uri} closed.`);
-});
-*/
+function getSeverity(msg: string): vscodels.DiagnosticSeverity {
+	if(msg.indexOf("warning")) {
+		return vscodels.DiagnosticSeverity.Warning;
+	} else if (msg.indexOf("error")) {
+		return vscodels.DiagnosticSeverity.Error;
+	} else
+		return vscodels.DiagnosticSeverity.Information;
+}
 
 // Listen on the connection
 connection.listen();
-
-// The content of a text document has changed. This event is emitted
-// when the text document first opened or when its content has changed.
-documents.onDidChangeContent((change) => {
-    let diagnostics: Diagnostic[] = [];
-	console.log("TESTESTESTEST");
-	connection.console.log("HEllo, Running all superly");
-    let lines = change.document.getText().split(/\r?\n/g);
-    lines.forEach((line, i) => {
-        let index = line.indexOf('typescript');
-        if (index >= 0) {
-            diagnostics.push({
-                severity: DiagnosticSeverity.Warning,
-                range: {
-                    start: { line: i, character: index},
-                    end: { line: i, character: index + 10 }
-                },
-                message: `${line.substr(index, 10)} should be spelled TypeScript`,
-                source: 'ex'
-            });
-        }
-    })
-    // Send the computed diagnostics to VS Code.
-    connection.sendDiagnostics({ uri: change.document.uri, diagnostics });
-});

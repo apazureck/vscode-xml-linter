@@ -20,11 +20,16 @@
 			"type": "object",
 			"title": "Example configuration",
 			"properties": {
-				"languageServerExample.maxNumberOfProblems": {
+				"xml.maxNumberOfProblems": {
 					"type": "number",
 					"default": 100,
 					"description": "Controls the maximum number of problems produced by the server."
-				}
+				},
+				"xml.schemalocations": {
+					"type": "array",
+					"default": [".vscode/xmlschemas"],
+					"description": "Array of relative or absolute xml schema sources (xsd). External schemas will be downloaded and stored in `${workspaceRoot}/.vscode/xmlschemas`"
+				}			
 			}
 		}
 	},	

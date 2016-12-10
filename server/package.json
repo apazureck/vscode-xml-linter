@@ -1,20 +1,24 @@
 {
-	"name": "xml-language-server",
-	"description": "A xml language server.",
-	"version": "0.0.1",
-	"author": "Andreas Pazureck",
-	"license": "MIT",
-	"engines": {
-		"node": "*"
-	},
-	"dependencies": {
-		"vscode-languageserver": "^2.2.0"
-	},
-	"devDependencies": {
-		"typescript": "^1.8.9"
-	},
-	"scripts": {
-		"compile": "installServerIntoExtension ../client ./package.json ./tsconfig.json && tsc -p .",
-		"watch": "installServerIntoExtension ../client ./package.json ./tsconfig.json && tsc --watch -p ."
-	}
+  "name": "xml-language-server",
+  "description": "An xml language server.",
+  "version": "0.0.1",
+  "author": "Andreas Pazureck",
+  "license": "MIT",
+  "engines": {
+    "node": "*"
+  },
+  "dependencies": {
+    "linq-es2015": "^2.4.13",
+    "vscode-languageserver": "^2.2.0",
+    "xmldom": "^0.1.27",
+    "xmllint": "^0.1.1"
+  },
+  "devDependencies": {
+    "libxml-xsd": "^0.5.2",
+    "typescript": "^1.8.9"
+  },
+  "scripts": {
+    "compile": "installServerIntoExtension ../client ./package.json ./tsconfig.json && tsc -p .",
+    "watch": "installServerIntoExtension ../client ./package.json ./tsconfig.json && tsc --watch -p ."
+  }
 }
