@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<purchaseOrder orderDate="1999-10-20">
+<purchaseOrder orderDate="1999-10-20" xmlns="test" xmlns="test">
     <shipTo country="US">
         <name>Alice Smith</name>
         <street>123 Maple Street</street>
